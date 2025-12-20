@@ -23,14 +23,16 @@ logger = get_logger()
 class WebClient:
     """Secure HTTP client for web application testing."""
 
-    def __init__(self, base_url: str, timeout: int = 30, rate_limit: float = 0.5):
+    def __init__(self, base_url: str, timeout: int = 30, rate_limit: float = 0.5, verify_ssl: bool = True):
         self.base_url = base_url.rstrip('/')
         self.timeout = timeout
         self.rate_limit = rate_limit  # Seconds between requests
         self.last_request_time = 0.0
+        self.verify_ssl = verify_ssl
 
         # Session for cookie management
         self.session = requests.Session()
+        self.session.verify = verify_ssl
         self.session.headers.update({
             'User-Agent': 'RAPTOR Security Scanner (Authorized Testing)',
         })
