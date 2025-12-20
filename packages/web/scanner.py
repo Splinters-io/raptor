@@ -14,7 +14,7 @@ from typing import Dict, Any
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from core.logging import get_logger
-from packages.llm_analysis.llm.client import LLMClient
+from packages.llm_analysis.llm.providers import LLMProvider
 from packages.web.client import WebClient
 from packages.web.crawler import WebCrawler
 from packages.web.fuzzer import WebFuzzer
@@ -25,14 +25,14 @@ logger = get_logger()
 class WebScanner:
     """Fully autonomous web application security scanner."""
 
-    def __init__(self, base_url: str, llm: LLMClient, out_dir: Path):
+    def __init__(self, base_url: str, llm: LLMProvider, out_dir: Path, verify_ssl: bool = True):
         self.base_url = base_url
         self.llm = llm
         self.out_dir = out_dir
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
         # Initialize components
-        self.client = WebClient(base_url)
+        self.client = WebClient(base_url, verify_ssl=verify_ssl)
         self.crawler = WebCrawler(self.client)
         self.fuzzer = WebFuzzer(self.client, llm)
 
@@ -107,6 +107,9 @@ Examples:
 
   # Scan with custom output directory
   python3 scanner.py --url http://localhost:3000 --out /path/to/output
+
+  # Scan a server with self-signed certificate
+  python3 scanner.py --url https://internal-server.local --insecure
         """
     )
 
@@ -114,6 +117,7 @@ Examples:
     parser.add_argument("--out", help="Output directory for results")
     parser.add_argument("--max-depth", type=int, default=3, help="Maximum crawl depth (default: 3)")
     parser.add_argument("--max-pages", type=int, default=50, help="Maximum pages to crawl (default: 50)")
+    parser.add_argument("--insecure", "-k", action="store_true", help="Skip SSL certificate verification")
 
     args = parser.parse_args()
 
@@ -141,9 +145,13 @@ Examples:
     logger.info(f"Target: {args.url}")
     logger.info(f"Output: {out_dir}")
 
-    # Initialize LLM
+    # Initialize LLM client with multi-model support, fallback, and retry
     try:
-        llm = LLMClient()
+        from packages.llm_analysis.llm.client import LLMClient
+        from packages.llm_analysis.llm.config import LLMConfig
+
+        llm_config = LLMConfig()
+        llm = LLMClient(llm_config)
         logger.info("LLM client initialized")
     except Exception as e:
         print(f"\n⚠️  Warning: Could not initialize LLM client: {e}")
@@ -153,7 +161,12 @@ Examples:
         llm = None
 
     # Run scan
-    scanner = WebScanner(args.url, llm, out_dir)
+    verify_ssl = not args.insecure
+    if args.insecure:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        logger.warning("SSL certificate verification disabled")
+    scanner = WebScanner(args.url, llm, out_dir, verify_ssl=verify_ssl)
 
     try:
         results = scanner.scan()
