@@ -1,0 +1,5 @@
+{
+  "name": "raptor-gpu-fuzz",
+  "version": "0.1.0",
+  "description": "LLM-guided fuzzing — uses local models to generate semantically intelligent mutations from decompiled parser code and coverage feedback"
+}

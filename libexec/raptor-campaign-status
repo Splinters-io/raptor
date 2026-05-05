@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""Check status of running campaigns — local and remote.
+
+Usage:
+    raptor-campaign-status              # check all
+    raptor-campaign-status --remote     # check thefarm too
+"""
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+
+
+def check_local():
+    """Check local campaigns."""
+    from core.remote.phase import check_campaigns
+
+    projects_dir = Path.home() / ".raptor" / "projects"
+    campaigns = check_campaigns(projects_dir)
+
+    if not campaigns:
+        print("No active campaigns locally.")
+        return
+
+    for c in campaigns:
+        status_marker = {
+            "running": "...",
+            "phase_complete": "-->",
+            "campaign_complete": "[done]",
+            "failed": "[FAIL]",
+        }.get(c["status"], "?")
+
+        print(f"{status_marker} {c['project']}/{c['run']}")
+        print(f"     Phase: {c['phase']} ({c['status']})")
+        if c["last_progress"]:
+            print(f"     Last: {c['last_progress']}")
+        if c["next_action"]:
+            print(f"     Next: {c['next_action']}")
+        if c["findings"]:
+            print(f"     Findings: {json.dumps(c['findings'])}")
+        print()
+
+
+def check_remote(host="thefarm", user="carroll"):
+    """Check campaigns on thefarm."""
+    try:
+        result = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+             f"{user}@{host}",
+             f"cd ~/raptor && python3 -c \""
+             f"from core.remote.phase import check_campaigns; "
+             f"from pathlib import Path; import json; "
+             f"campaigns = check_campaigns(Path.home() / '.raptor' / 'projects'); "
+             f"print(json.dumps(campaigns, indent=2))\""],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            campaigns = json.loads(result.stdout)
+            if campaigns:
+                print(f"=== {host} ===")
+                for c in campaigns:
+                    status_marker = {
+                        "running": "...",
+                        "phase_complete": "-->",
+                        "campaign_complete": "[done]",
+                        "failed": "[FAIL]",
+                    }.get(c["status"], "?")
+
+                    print(f"{status_marker} {c['project']}/{c['run']}")
+                    print(f"     Phase: {c['phase']} ({c['status']})")
+                    if c["last_progress"]:
+                        print(f"     Last: {c['last_progress']}")
+                    if c["next_action"]:
+                        print(f"     Next: {c['next_action']}")
+                    print()
+            else:
+                print(f"No active campaigns on {host}.")
+        else:
+            print(f"Could not reach {host}: {result.stderr[:100]}")
+    except Exception as e:
+        print(f"Could not check {host}: {e}")
+
+
+if __name__ == "__main__":
+    check_local()
+    if "--remote" in sys.argv or len(sys.argv) == 1:
+        check_remote()

@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+#
+# raptor-orchestrator — manage the MCP task orchestrator on thefarm
+#
+# Usage:
+#   raptor-orchestrator start      Start the orchestrator in a screen session
+#   raptor-orchestrator stop       Stop the orchestrator
+#   raptor-orchestrator status     Check if it's running
+#   raptor-orchestrator logs       Tail the orchestrator log
+#   raptor-orchestrator restart    Stop then start
+#
+# Designed to run ON thefarm. The orchestrator persists in a screen session
+# so it survives SSH disconnects and keeps scheduling/polling tasks.
+
+set -euo pipefail
+
+SCRIPT="$0"
+while [ -L "$SCRIPT" ]; do
+    DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
+    SCRIPT="$(readlink "$SCRIPT")"
+    [[ "$SCRIPT" != /* ]] && SCRIPT="$DIR/$SCRIPT"
+done
+RAPTOR_DIR="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
+
+SESSION="raptor-orchestrator"
+LOG="/tmp/${SESSION}.log"
+PID_FILE="${HOME}/.raptor/orchestrator.pid"
+
+_is_running() {
+    screen -ls 2>/dev/null | grep -q "\.${SESSION}[[:space:]]"
+}
+
+_pid_alive() {
+    [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
+}
+
+cmd_start() {
+    if _is_running; then
+        echo "orchestrator already running in screen session '${SESSION}'"
+        echo "  logs: screen -r ${SESSION}  or  tail -f ${LOG}"
+        exit 0
+    fi
+
+    # Check pydantic (mcp only needed for server, not daemon)
+    if ! python3 -c "import pydantic" 2>/dev/null; then
+        echo "error: pydantic not installed"
+        echo "  run: pip install pydantic"
+        exit 1
+    fi
+
+    echo "starting scheduler daemon in screen session '${SESSION}'..."
+    screen -dmS "${SESSION}" -L -Logfile "${LOG}" \
+        bash -c "cd ${RAPTOR_DIR} && RAPTOR_DIR=${RAPTOR_DIR} python3 -m core.mcp daemon 2>&1 | tee -a ${LOG}; echo EXIT_CODE=\$? >> ${LOG}"
+
+    sleep 1
+    if _is_running; then
+        echo "orchestrator started"
+        echo "  screen: screen -r ${SESSION}"
+        echo "  log:    tail -f ${LOG}"
+        echo "  stop:   $0 stop"
+    else
+        echo "error: orchestrator failed to start — check ${LOG}"
+        exit 1
+    fi
+}
+
+cmd_stop() {
+    if ! _is_running; then
+        echo "orchestrator not running"
+        # Clean up stale PID file
+        rm -f "$PID_FILE"
+        exit 0
+    fi
+
+    echo "stopping orchestrator..."
+    screen -X -S "${SESSION}" quit 2>/dev/null || true
+    rm -f "$PID_FILE"
+
+    sleep 1
+    if _is_running; then
+        echo "warning: screen session still alive, sending kill"
+        screen -X -S "${SESSION}" kill 2>/dev/null || true
+    fi
+    echo "orchestrator stopped"
+}
+
+cmd_status() {
+    if _is_running; then
+        echo "orchestrator: running (screen session '${SESSION}')"
+        if [ -f "$PID_FILE" ]; then
+            echo "  server PID: $(cat "$PID_FILE")"
+        fi
+        # Show task counts from the database (via Python, sqlite3 CLI may not be installed)
+        cd "${RAPTOR_DIR}" && python3 -c "
+from core.mcp.state import TaskStore
+from core.mcp.models import TaskState
+store = TaskStore()
+print('  tasks:')
+for state in TaskState:
+    tasks = store.list_tasks(state=state, limit=10000)
+    if tasks:
+        print(f'    {state.value:<12s} {len(tasks)}')
+" 2>/dev/null || true
+    else
+        echo "orchestrator: not running"
+    fi
+}
+
+cmd_logs() {
+    if [ -f "$LOG" ]; then
+        tail -f "$LOG"
+    else
+        echo "no log file at ${LOG}"
+    fi
+}
+
+cmd_restart() {
+    cmd_stop
+    sleep 1
+    cmd_start
+}
+
+case "${1:-help}" in
+    start)   cmd_start ;;
+    stop)    cmd_stop ;;
+    status)  cmd_status ;;
+    logs)    cmd_logs ;;
+    restart) cmd_restart ;;
+    *)
+        echo "usage: raptor-orchestrator {start|stop|status|logs|restart}"
+        exit 1
+        ;;
+esac

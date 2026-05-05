@@ -20,7 +20,16 @@ import logging
 import time
 
 # Add to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
+import os; sys.path.insert(0, os.environ["RAPTOR_DIR"])
+
+try:
+    from core.config import RaptorConfig
+    _get_safe_env = RaptorConfig.get_safe_env
+except (ImportError, AttributeError):
+    def _get_safe_env() -> Dict[str, str]:
+        """Local fallback: strip vars that tools may shell-evaluate."""
+        unsafe_vars = {'TERMINAL', 'EDITOR', 'VISUAL', 'BROWSER', 'PAGER'}
+        return {k: v for k, v in os.environ.items() if k not in unsafe_vars}
 
 try:
     from packages.llm_analysis.llm.client import LLMClient
@@ -505,7 +514,10 @@ Respond with JSON only:
             cmd = [sys.executable, 'raptor.py', 'frida-auto', '--target', frida_target, '--goal', self.goal]
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=300,
+                env=_get_safe_env()
+            )
             self.frida_strategies[strategy]['tried'] = True
 
             # Detect failure type
@@ -585,7 +597,8 @@ Respond with JSON only:
                     [sys.executable, 'raptor.py', 'scan', '--repo', self.target],
                     capture_output=True,
                     text=True,
-                    timeout=300
+                    timeout=300,
+                    env=_get_safe_env()
                 )
                 tool_findings = {'status': 'completed', 'output': result.stdout}
 
@@ -596,7 +609,8 @@ Respond with JSON only:
                     [sys.executable, 'raptor.py', 'codeql', '--repo', self.target],
                     capture_output=True,
                     text=True,
-                    timeout=600
+                    timeout=600,
+                    env=_get_safe_env()
                 )
                 tool_findings = {'status': 'completed', 'output': result.stdout}
 
@@ -611,7 +625,8 @@ Respond with JSON only:
                     [sys.executable, 'raptor.py', 'fuzz', '--binary', self.target, '--duration', '300'],
                     capture_output=True,
                     text=True,
-                    timeout=400
+                    timeout=400,
+                    env=_get_safe_env()
                 )
                 tool_findings = {'status': 'completed', 'output': result.stdout}
 

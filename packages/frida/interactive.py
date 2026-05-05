@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Any
 import logging
 import time
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+import os; sys.path.insert(0, os.environ["RAPTOR_DIR"])
 
 try:
     import frida

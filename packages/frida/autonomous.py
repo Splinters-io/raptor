@@ -15,13 +15,15 @@ Workflow:
 """
 
 import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import logging
 
-# Add parent to path for RAPTOR imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+import os
+sys.path.insert(0, os.environ["RAPTOR_DIR"])
 
 try:
     from packages.llm_analysis.llm.client import LLMClient
@@ -40,7 +42,8 @@ class AutonomousFridaAnalyzer:
     """
 
     def __init__(self, target: str, goal: str = "Find security vulnerabilities",
-                 target_args: List[str] = None):
+                 target_args: List[str] = None, device: Optional[str] = None,
+                 mode: str = "spawn"):
         """
         Initialize autonomous analyzer.
 
@@ -48,12 +51,16 @@ class AutonomousFridaAnalyzer:
             target: Binary path, process name, or PID
             goal: Security testing goal (guides LLM decisions)
             target_args: Arguments to pass to spawned binary
+            device: Frida device identifier (e.g., 'local', 'usb', or host:port)
+            mode: 'spawn' to start a new process, 'attach' to hook a running one
         """
         self.target = target
         self.goal = goal
         self.target_args = target_args or []
+        self.device = device
+        self.mode = mode
         self.llm_client = LLMClient() if LLMClient else None
-        self.frida_scanner = FridaScanner()
+        self.frida_scanner = FridaScanner(device=device) if device else FridaScanner()
         self.iteration = 0
         self.max_iterations = 5
         self.findings_history: List[Dict] = []
@@ -61,33 +68,192 @@ class AutonomousFridaAnalyzer:
     def analyze_static(self) -> Dict[str, Any]:
         """
         Perform static analysis to identify interesting functions/APIs.
+        Uses r2 (radare2) for function, import, and string enumeration.
+        Falls back to BinaryContextAnalyzer if r2 is unavailable.
 
         Returns:
             Dict of static analysis results
         """
         logger.info(f"Static analysis of {self.target}")
 
-        # TODO: Integration with existing RAPTOR static analysis
-        # For now, use basic symbol enumeration via Frida
-
         static_info = {
             "binary_path": self.target,
             "interesting_functions": [],
             "imported_libraries": [],
-            "security_features": []
+            "security_features": [],
+            "strings": []
         }
 
-        # Use Frida to enumerate without running
+        # Try r2 first
+        r2_path = shutil.which('r2') or shutil.which('radare2')
+        if r2_path:
+            static_info = self._analyze_with_r2(r2_path, static_info)
+        else:
+            logger.warning("r2 not available, falling back to BinaryContextAnalyzer")
+            static_info = self._analyze_with_context_analyzer(static_info)
+
+        return static_info
+
+    def _analyze_with_r2(self, r2_path: str, static_info: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Use radare2 to extract functions, imports, and strings.
+
+        Args:
+            r2_path: Path to r2 binary
+            static_info: Base static info dict to populate
+
+        Returns:
+            Populated static_info dict
+        """
         try:
-            import frida
-            device = frida.get_local_device()
+            result = subprocess.run(
+                [r2_path, '-q', '-c', 'aaa;aflj;iij;izj', self.target],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
 
-            # Analyze binary symbols
-            # This is a placeholder - would integrate with RAPTOR's binary_analysis package
-            logger.info("Enumerating binary information...")
+            if result.returncode != 0:
+                logger.warning(f"r2 returned non-zero: {result.stderr[:200]}")
+                return self._analyze_with_context_analyzer(static_info)
 
+            # r2 outputs multiple JSON arrays separated by newlines
+            # Parse each JSON block from the output
+            output = result.stdout.strip()
+            json_blocks = []
+            depth = 0
+            current_block = []
+
+            for char in output:
+                if char == '[' and depth == 0:
+                    depth = 1
+                    current_block = [char]
+                elif char == '[':
+                    depth += 1
+                    current_block.append(char)
+                elif char == ']' and depth == 1:
+                    depth = 0
+                    current_block.append(char)
+                    json_blocks.append(''.join(current_block))
+                elif char == ']':
+                    depth -= 1
+                    current_block.append(char)
+                elif depth > 0:
+                    current_block.append(char)
+
+            # Parse blocks: aflj (functions), iij (imports), izj (strings)
+            functions_data = []
+            imports_data = []
+            strings_data = []
+
+            for i, block in enumerate(json_blocks):
+                try:
+                    parsed = json.loads(block)
+                    if i == 0:
+                        functions_data = parsed
+                    elif i == 1:
+                        imports_data = parsed
+                    elif i == 2:
+                        strings_data = parsed
+                except json.JSONDecodeError:
+                    continue
+
+            # Extract interesting functions (security-relevant)
+            security_keywords = {
+                'malloc', 'free', 'realloc', 'calloc',
+                'strcpy', 'strncpy', 'strcat', 'strncat', 'sprintf', 'snprintf',
+                'gets', 'fgets', 'scanf', 'fscanf',
+                'memcpy', 'memmove', 'memset',
+                'system', 'exec', 'popen', 'fork',
+                'open', 'read', 'write', 'close', 'ioctl',
+                'socket', 'connect', 'bind', 'listen', 'accept', 'send', 'recv',
+                'crypt', 'rand', 'srand',
+                'setuid', 'setgid', 'chroot', 'chown', 'chmod',
+                'dlopen', 'dlsym',
+                'SSL_', 'EVP_', 'AES_', 'RSA_',
+            }
+
+            for func in functions_data:
+                name = func.get('name', '')
+                # Strip common prefixes
+                clean_name = name.lstrip('sym.').lstrip('imp.').lstrip('_')
+                if any(kw in clean_name for kw in security_keywords):
+                    static_info['interesting_functions'].append({
+                        'name': name,
+                        'offset': func.get('offset', 0),
+                        'size': func.get('size', 0)
+                    })
+
+            # Extract imports
+            for imp in imports_data:
+                lib = imp.get('libname', imp.get('lib', ''))
+                if lib and lib not in static_info['imported_libraries']:
+                    static_info['imported_libraries'].append(lib)
+
+            # Extract security-relevant strings (limited to avoid noise)
+            security_string_patterns = [
+                'password', 'passwd', 'secret', 'token', 'key', 'auth',
+                'admin', 'root', 'login', 'crypt', 'hash',
+                '/etc/', '/tmp/', '/dev/', 'http://', 'https://',
+                'cmd', 'shell', 'exec', 'eval',
+            ]
+            for s in strings_data[:5000]:  # Limit to prevent huge output
+                string_val = s.get('string', '')
+                if any(pat in string_val.lower() for pat in security_string_patterns):
+                    static_info['strings'].append({
+                        'value': string_val[:256],  # Truncate long strings
+                        'offset': s.get('vaddr', s.get('offset', 0)),
+                        'section': s.get('section', '')
+                    })
+
+            logger.info(
+                f"r2 analysis: {len(static_info['interesting_functions'])} interesting functions, "
+                f"{len(static_info['imported_libraries'])} libraries, "
+                f"{len(static_info['strings'])} security-relevant strings"
+            )
+
+        except subprocess.TimeoutExpired:
+            logger.warning("r2 analysis timed out, falling back to BinaryContextAnalyzer")
+            return self._analyze_with_context_analyzer(static_info)
         except Exception as e:
-            logger.warning(f"Static analysis limited: {e}")
+            logger.warning(f"r2 analysis failed: {e}, falling back to BinaryContextAnalyzer")
+            return self._analyze_with_context_analyzer(static_info)
+
+        return static_info
+
+    def _analyze_with_context_analyzer(self, static_info: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Fall back to BinaryContextAnalyzer when r2 is unavailable.
+
+        Args:
+            static_info: Base static info dict to populate
+
+        Returns:
+            Populated static_info dict
+        """
+        try:
+            from packages.frida.binary_context_analyzer import BinaryContextAnalyzer
+
+            analyzer = BinaryContextAnalyzer(self.target)
+            deps = analyzer.analyze_static_dependencies()
+            static_info['imported_libraries'] = deps
+
+            # Detect format info
+            binary_format = analyzer.detect_binary_format()
+            static_info['security_features'].append(f'format:{binary_format}')
+
+            packing = analyzer.detect_packed_binary()
+            if packing['is_packed']:
+                static_info['security_features'].append(
+                    f'packed:{packing["packer_detected"] or "unknown"}'
+                )
+
+            logger.info(
+                f"BinaryContextAnalyzer fallback: {len(deps)} dependencies, "
+                f"format={binary_format}"
+            )
+        except Exception as e:
+            logger.warning(f"BinaryContextAnalyzer fallback also failed: {e}")
 
         return static_info
 
@@ -487,9 +653,13 @@ Respond with JSON:
 
             # Step 4: Run instrumentation
             try:
-                self.frida_scanner.spawn_process(self.target, self.target_args)
+                if self.mode == 'attach':
+                    self.frida_scanner.attach_to_process(self.target)
+                else:
+                    self.frida_scanner.spawn_process(self.target, self.target_args)
                 self.frida_scanner.load_script(frida_script, f"auto_iteration_{self.iteration}")
-                self.frida_scanner.resume_process()
+                if self.mode != 'attach':
+                    self.frida_scanner.resume_process()
 
                 logger.info(f"Running instrumentation for {duration_per_iteration}s...")
                 import time
@@ -539,12 +709,18 @@ def main():
                        help='Maximum analysis iterations')
     parser.add_argument('--duration', type=int, default=30,
                        help='Duration per iteration (seconds)')
+    parser.add_argument('--device', default=None,
+                       help='Frida device identifier (local, usb, or host:port)')
+    parser.add_argument('--mode', choices=['spawn', 'attach'], default='spawn',
+                       help='spawn a new process or attach to running (default: spawn)')
     parser.add_argument('target_args', nargs='*', default=[],
                        help='Arguments to pass to target (after --)')
 
     args = parser.parse_args()
 
-    analyzer = AutonomousFridaAnalyzer(args.target, args.goal, args.target_args)
+    analyzer = AutonomousFridaAnalyzer(
+        args.target, args.goal, args.target_args, device=args.device, mode=args.mode
+    )
     analyzer.max_iterations = args.max_iterations
     findings = analyzer.run_autonomous(args.duration)
 

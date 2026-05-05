@@ -39,49 +39,49 @@ Determine what the user wants to achieve:
 **Option A: Template-Based (Quick)**
 Use when user has a specific, common use case:
 ```bash
-raptor-cli frida --attach <target> --template <template_name>
+python3 packages/frida/scanner.py --attach <target> --template <template_name>
 ```
 
 Examples:
 ```bash
 # Bypass SSL pinning on mobile app
-raptor-cli frida --attach com.example.app --template ssl-unpin --duration 60
+python3 packages/frida/scanner.py --attach com.example.app --template ssl-unpin --duration 60
 
 # Trace API calls in process
-raptor-cli frida --attach 1234 --template api-trace --duration 30
+python3 packages/frida/scanner.py --attach 1234 --template api-trace --duration 30
 
 # Scan memory for secrets
-raptor-cli frida --spawn /path/to/binary --template memory-scan
+python3 packages/frida/scanner.py --spawn /path/to/binary --template memory-scan
 ```
 
 **Option B: Autonomous (Intelligent)**
 Use when user wants comprehensive analysis or has a specific security goal:
 ```bash
-raptor-cli frida-auto --target <binary/process> --goal "<security objective>"
+python3 packages/frida/autonomous.py --target <binary/process> --goal "<security objective>"
 ```
 
 Examples:
 ```bash
 # Find authentication bypass
-raptor-cli frida-auto --target ./myapp --goal "Find authentication bypass vulnerabilities"
+python3 packages/frida/autonomous.py --target ./myapp --goal "Find authentication bypass vulnerabilities"
 
 # Discover API key leakage
-raptor-cli frida-auto --target com.app.mobile --goal "Find hardcoded API keys and secrets"
+python3 packages/frida/autonomous.py --target com.app.mobile --goal "Find hardcoded API keys and secrets"
 
 # Memory corruption bugs
-raptor-cli frida-auto --target /usr/local/bin/daemon --goal "Find memory corruption issues"
+python3 packages/frida/autonomous.py --target /usr/local/bin/daemon --goal "Find memory corruption issues"
 ```
 
 **Option C: Combined with Static Analysis**
 For best results, combine Frida with RAPTOR's static analysis:
 ```bash
 # Step 1: Static analysis
-raptor-cli scan --repo /path/to/code
+python3 raptor.py scan --repo /path/to/code
 
 # Step 2: Review findings and identify interesting functions/APIs
 
 # Step 3: Targeted Frida instrumentation
-raptor-cli frida-auto --target ./binary --goal "Verify <specific finding from static analysis>"
+python3 packages/frida/autonomous.py --target ./binary --goal "Verify <specific finding from static analysis>"
 ```
 
 ### Step 3: Analyze Results
@@ -119,27 +119,27 @@ Help users specify the target correctly:
 
 ```bash
 # iOS app SSL pinning bypass
-raptor-cli frida --attach "App Name" --template ssl-unpin --duration 120
+python3 packages/frida/scanner.py --attach "App Name" --template ssl-unpin --duration 120
 
 # Android app API tracing
-raptor-cli frida --attach com.example.app --template api-trace --duration 60
+python3 packages/frida/scanner.py --attach com.example.app --template api-trace --duration 60
 ```
 
 ### 2. Binary Analysis
 
 ```bash
 # Spawn binary and trace crypto
-raptor-cli frida --spawn /usr/local/bin/myapp --template crypto-trace
+python3 packages/frida/scanner.py --spawn /usr/local/bin/myapp --template crypto-trace
 
 # Memory scanning for secrets
-raptor-cli frida --spawn ./binary --template memory-scan --duration 30
+python3 packages/frida/scanner.py --spawn ./binary --template memory-scan --duration 30
 ```
 
 ### 3. Autonomous Security Testing
 
 ```bash
 # Let LLM guide the analysis
-raptor-cli frida-auto --target ./app --goal "Find security vulnerabilities" --max-iterations 5
+python3 packages/frida/autonomous.py --target ./app --goal "Find security vulnerabilities" --max-iterations 5
 ```
 
 ### 4. Combined with RAPTOR
@@ -147,7 +147,7 @@ raptor-cli frida-auto --target ./app --goal "Find security vulnerabilities" --ma
 ```bash
 # Full security assessment
 raptor-cli agentic --repo /path/to/code  # Static analysis
-raptor-cli frida-auto --target ./binary --goal "Verify static analysis findings"
+python3 packages/frida/autonomous.py --target ./binary --goal "Verify static analysis findings"
 ```
 
 ## Important Notes
@@ -248,8 +248,8 @@ User: "com.example.app"
 
 You: Perfect. I'll run two Frida scans in parallel:
 
-     [Runs raptor-cli frida --attach com.example.app --template memory-scan --duration 60]
-     [Runs raptor-cli frida --attach com.example.app --template api-trace --duration 60]
+     [Runs python3 packages/frida/scanner.py --attach com.example.app --template memory-scan --duration 60]
+     [Runs python3 packages/frida/scanner.py --attach com.example.app --template api-trace --duration 60]
 
      [After completion, reads findings and explains results to user]
 

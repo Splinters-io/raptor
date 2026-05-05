@@ -1,0 +1,43 @@
+╔═══════════════════════════════════════════════════════════════════════════╗ 
+║                                                                           ║
+║             ██████╗  █████╗ ██████╗ ████████╗ ██████╗ ██████╗             ║ 
+║             ██╔══██╗██╔══██╗██╔══██╗╚══██╔══╝██╔═══██╗██╔══██╗            ║ 
+║             ██████╔╝███████║██████╔╝   ██║   ██║   ██║██████╔╝            ║ 
+║             ██╔══██╗██╔══██║██╔═══╝    ██║   ██║   ██║██╔══██╗            ║ 
+║             ██║  ██║██║  ██║██║        ██║   ╚██████╔╝██║  ██║            ║ 
+║             ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝        ╚═╝    ╚═════╝ ╚═╝  ╚═╝            ║ 
+║                                                                           ║ 
+║             Autonomous Offensive/Defensive Research Framework             ║
+║             Based on Claude Code - v1.0-beta                              ║
+║                                                                           ║ 
+║             By Gadi Evron, Daniel Cuthbert                                ║
+║                Thomas Dullien (Halvar Flake), Michael Bargury             ║
+║                & John Cartwright                                          ║
+║                                                                           ║ 
+╚═══════════════════════════════════════════════════════════════════════════╝ 
+
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣠⣤⣤⣀⣀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣾⣿⣿⠿⠿⠟
+⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀⣀⣀⣀⣀⣤⣴⣶⣶⣶⣤⣿⡿⠁⠀⠀⠀
+⣀⠤⠴⠒⠒⠛⠛⠛⠛⠛⠿⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠟⠁⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⣿⣿⣿⡟⠻⢿⡀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣾⢿⣿⠟⠀⠸⣊⡽⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⡇⣿⡁⠀⠀⠀⠉⠁⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠻⠿⣿⣧⠀ Get them bugs.....⠀⠀⠀⠀⠀⠀⠀⠀
+
+ tools: afl++ ✓  binwalk ✓  bpftrace ✗  codeql ✓  frida ✓  gdb ✓  ilspycmd ✗  jadx ✓  r2 ✓  rr ✗  semgrep ✓  strace ✗  yara ✓
+   env: out/ ✓  disk 981 GB free  sandbox ✗
+  lang: tree-sitter ✗
+   llm: anthropic/default (primary, via ANTHROPIC_API_KEY)
+        claude code ✓
+
+  warn: /oss-forensics unavailable — BigQuery not configured
+        Subprocess sandboxing unavailable — neither user namespaces nor Landlock are supported on this kernel
+        /reverse, /fuzz, /gpu-fuzz limited — bpftrace not found
+        /reverse limited — ilspycmd not found
+        /crash-analysis limited — rr not found
+        /reverse limited — strace not found
+
+  For defensive security research, education, and authorized penetration testing.
+
+raptor:~$ "We explore… and you call us criminals."

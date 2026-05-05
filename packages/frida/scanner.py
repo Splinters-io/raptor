@@ -49,23 +49,48 @@ logger = logging.getLogger("frida")
 class FridaScanner:
     """RAPTOR Frida scanner for dynamic instrumentation."""
 
-    def __init__(self, output_dir: Optional[Path] = None):
+    def __init__(self, output_dir: Optional[Path] = None, device: str = "local"):
         """
         Initialize Frida scanner.
 
         Args:
             output_dir: Directory for output files
+            device: Device specifier — "local", "usb", or "host:port" for remote
         """
         self.script_root = Path(__file__).parent.parent.parent
         self.templates_dir = Path(__file__).parent / "templates"
         self.output_dir = output_dir or (self.script_root / "out" / f"frida_scan_{int(time.time())}")
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        self.device = self._resolve_device(device)
         self.session: Optional[frida.core.Session] = None
         self.script: Optional[frida.core.Script] = None
         self.findings: List[Dict[str, Any]] = []
+        self._max_findings = 10000
+        self._detached = False
+        self._lock = __import__("threading").Lock()
 
         logger.info("Frida scanner initialized")
+        logger.info(f"Device: {self.device}")
+
+    def _resolve_device(self, device_spec: str) -> frida.core.Device:
+        """Resolve device from specifier string."""
+        if device_spec == "local":
+            return frida.get_local_device()
+        if device_spec == "usb":
+            try:
+                return frida.get_usb_device(timeout=5)
+            except frida.TimedOutError:
+                logger.error("No USB device found (is frida-server running on device?)")
+                raise
+        if ":" in device_spec:
+            mgr = frida.get_device_manager()
+            return mgr.add_remote_device(device_spec)
+        try:
+            return frida.get_device(device_spec, timeout=5)
+        except Exception:
+            logger.error(f"Device not found: {device_spec}")
+            raise
         logger.info(f"Output directory: {self.output_dir}")
 
     def attach_to_process(self, target: str) -> frida.core.Session:
@@ -79,24 +104,23 @@ class FridaScanner:
             Frida session
         """
         try:
-            # Try as PID first
             if target.isdigit():
                 pid = int(target)
                 logger.info(f"Attaching to PID {pid}...")
-                self.session = frida.attach(pid)
+                self.session = self.device.attach(pid)
             else:
-                # Try as process name
                 logger.info(f"Attaching to process '{target}'...")
-                self.session = frida.attach(target)
+                self.session = self.device.attach(target)
 
-            logger.info(f"✓ Attached to process successfully")
+            self.session.on("detached", self._on_detached)
+            logger.info(f"Attached to process successfully")
             return self.session
 
         except frida.ProcessNotFoundError:
-            logger.error(f"✗ Process not found: {target}")
+            logger.error(f"Process not found: {target}")
             raise
         except Exception as e:
-            logger.error(f"✗ Failed to attach: {e}")
+            logger.error(f"Failed to attach: {e}")
             raise
 
     def spawn_process(self, binary_path: str, args: List[str] = None) -> frida.core.Session:
@@ -115,15 +139,34 @@ class FridaScanner:
             if args:
                 logger.info(f"Arguments: {' '.join(args)}")
 
-            pid = frida.spawn([binary_path] + (args or []))
-            self.session = frida.attach(pid)
-            logger.info(f"✓ Spawned process (PID {pid})")
+            pid = self.device.spawn([binary_path] + (args or []))
+            self.session = self.device.attach(pid)
+            self.session.on("detached", self._on_detached)
+            logger.info(f"Spawned process (PID {pid})")
 
             return self.session
 
         except Exception as e:
-            logger.error(f"✗ Failed to spawn process: {e}")
+            logger.error(f"Failed to spawn process: {e}")
             raise
+
+    def _on_detached(self, reason: str, crash):
+        """Handle session detach (target crash, kill, etc)."""
+        self._detached = True
+        if reason == "process-terminated":
+            logger.warning(f"Target process terminated")
+        elif reason == "process-crashed":
+            logger.error(f"Target process CRASHED")
+            if crash:
+                with self._lock:
+                    self.findings.append({
+                        "type": "finding",
+                        "title": "Process Crash",
+                        "severity": "high",
+                        "detail": f"Process crashed: {crash.summary if hasattr(crash, 'summary') else str(crash)}",
+                    })
+        else:
+            logger.warning(f"Detached: {reason}")
 
     def load_script(self, script_source: str, script_name: str = "custom") -> frida.core.Script:
         """
@@ -174,19 +217,12 @@ class FridaScanner:
         return self.load_script(script_source, script_name=template_name)
 
     def _on_message(self, message: Dict, data: Optional[bytes]):
-        """
-        Handle messages from Frida script.
-
-        Args:
-            message: Message dict from Frida
-            data: Optional binary data
-        """
+        """Handle messages from Frida script (called from Frida's background thread)."""
         msg_type = message.get('type')
 
         if msg_type == 'send':
             payload = message.get('payload', {})
 
-            # Log the message
             if isinstance(payload, dict):
                 level = payload.get('level', 'info')
                 text = payload.get('message', str(payload))
@@ -198,25 +234,28 @@ class FridaScanner:
                 else:
                     logger.info(f"[Script] {text}")
 
-                # Store findings
                 if payload.get('type') == 'finding':
-                    self.findings.append(payload)
-                    logger.info(f"✓ Finding recorded: {payload.get('title', 'Unnamed')}")
+                    with self._lock:
+                        if len(self.findings) < self._max_findings:
+                            self.findings.append(payload)
+                        elif len(self.findings) == self._max_findings:
+                            logger.warning(f"Max findings ({self._max_findings}) reached, further findings dropped")
+                            self.findings.append({"type": "finding", "title": "TRUNCATED", "detail": "Max findings reached"})
+                    logger.info(f"Finding recorded: {payload.get('title', 'Unnamed')}")
             else:
                 logger.info(f"[Script] {payload}")
 
         elif msg_type == 'error':
             stack = message.get('stack', 'No stack trace')
             logger.error(f"[Script Error] {message.get('description', 'Unknown error')}")
-            logger.error(f"Stack trace:\n{stack}")
+            logger.error(f"Stack: {stack}")
 
     def resume_process(self):
         """Resume a spawned process."""
         if self.session:
             try:
-                device = frida.get_local_device()
-                device.resume(self.session._impl.pid)
-                logger.info("✓ Process resumed")
+                self.device.resume(self.session._impl.pid)
+                logger.info("Process resumed")
             except Exception as e:
                 logger.warning(f"Could not resume process: {e}")
 
@@ -259,13 +298,46 @@ class FridaScanner:
         logger.info(f"✓ Report saved: {report_path}")
         return report_path
 
+    def generate_sarif(self) -> Path:
+        """Generate SARIF 2.1.0 report for integration with other tools."""
+        severity_map = {"critical": "error", "high": "error", "medium": "warning", "low": "note", "info": "note"}
+
+        results = []
+        for f in self.findings:
+            results.append({
+                "ruleId": f.get("category", "frida/dynamic-finding"),
+                "level": severity_map.get(f.get("severity", "info"), "note"),
+                "message": {"text": f.get("detail", f.get("title", "Dynamic finding"))},
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": f.get("location", {}).get("file", "unknown")},
+                        "region": {"startLine": f.get("location", {}).get("line", 1)}
+                    }
+                }] if f.get("location") else []
+            })
+
+        sarif = {
+            "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+            "version": "2.1.0",
+            "runs": [{
+                "tool": {"driver": {"name": "RAPTOR Frida", "version": "1.0.0"}},
+                "results": results
+            }]
+        }
+
+        sarif_path = self.output_dir / "frida-results.sarif"
+        with open(sarif_path, 'w') as f:
+            json.dump(sarif, f, indent=2)
+        logger.info(f"SARIF report: {sarif_path}")
+        return sarif_path
+
     def print_summary(self):
         """Print scan summary."""
         print("\n" + "="*70)
         print("FRIDA SCAN COMPLETE")
         print("="*70)
-        print(f"✓ Findings: {len(self.findings)}")
-        print(f"✓ Output: {self.output_dir}")
+        print(f"Findings: {len(self.findings)}")
+        print(f"Output: {self.output_dir}")
         print("="*70 + "\n")
 
 
@@ -316,6 +388,8 @@ Available Templates:
                              help='Load custom Frida script')
 
     # Options
+    parser.add_argument('--device', default='local',
+                       help='Device: "local", "usb", or "host:port" for remote')
     parser.add_argument('--args', nargs='+',
                        help='Arguments for spawned process')
     parser.add_argument('--duration', type=int, default=30,
@@ -329,7 +403,27 @@ Available Templates:
 
     # Initialize scanner
     output_dir = Path(args.out) if args.out else None
-    scanner = FridaScanner(output_dir=output_dir)
+    scanner = FridaScanner(output_dir=output_dir, device=args.device)
+
+    # Run lifecycle
+    lifecycle_available = False
+    output_dir_str = str(scanner.output_dir)
+    try:
+        import subprocess as _sp
+        lifecycle = scanner.script_root / "libexec" / "raptor-run-lifecycle"
+        if lifecycle.exists():
+            target_path = args.attach or args.spawn or "unknown"
+            result = _sp.run(
+                [str(lifecycle), "start", "frida", "--target", target_path, "--out", output_dir_str],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                lifecycle_available = True
+                for line in result.stdout.splitlines():
+                    if line.startswith("OUTPUT_DIR="):
+                        output_dir_str = line.split("=", 1)[1]
+    except Exception:
+        pass
 
     try:
         # Attach or spawn
@@ -344,12 +438,11 @@ Available Templates:
         elif args.script:
             script_path = Path(args.script)
             if not script_path.exists():
-                logger.error(f"✗ Script not found: {script_path}")
+                logger.error(f"Script not found: {script_path}")
                 return 1
             script_source = script_path.read_text()
             scanner.load_script(script_source, script_name=script_path.name)
         else:
-            # Default: basic tracing
             logger.info("No script specified, using basic API tracing")
             scanner.load_template('api-trace')
 
@@ -357,22 +450,32 @@ Available Templates:
         if args.spawn and not args.no_resume:
             scanner.resume_process()
 
-        # Run for specified duration
+        # Run for specified duration, checking for detachment
         logger.info(f"Running for {args.duration} seconds...")
         logger.info("Press Ctrl+C to stop early")
-        time.sleep(args.duration)
+        elapsed = 0
+        while elapsed < args.duration and not scanner._detached:
+            time.sleep(1)
+            elapsed += 1
+        if scanner._detached:
+            logger.warning("Session detached during instrumentation")
 
     except KeyboardInterrupt:
-        logger.info("\n✓ Stopped by user")
+        logger.info("\nStopped by user")
     except Exception as e:
-        logger.error(f"✗ Error: {e}")
+        logger.error(f"Error: {e}")
         import traceback
         traceback.print_exc()
+        if lifecycle_available:
+            _sp.run([str(lifecycle), "fail", output_dir_str, str(e)], capture_output=True)
         return 1
     finally:
         scanner.detach()
         scanner.generate_report()
+        scanner.generate_sarif()
         scanner.print_summary()
+        if lifecycle_available:
+            _sp.run([str(lifecycle), "complete", output_dir_str], capture_output=True)
 
     return 0
 

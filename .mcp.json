@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "raptor-orchestrator": {
+      "command": "ssh",
+      "args": [
+        "carroll@192.168.1.100",
+        "cd ~/raptor && RAPTOR_DIR=~/raptor python3 -m core.mcp server"
+      ]
+    }
+  }
+}

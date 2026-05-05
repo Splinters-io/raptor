@@ -202,7 +202,7 @@ function findSymbol(name, preferredModule) {
 
     // Try Module.findExportByName (works on some platforms)
     try {
-        var ptr = Module.findExportByName(null, name);
+        var ptr = findExport(null, name);
         if (ptr) return ptr;
     } catch(e) {}
 

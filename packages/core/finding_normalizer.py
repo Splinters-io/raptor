@@ -37,6 +37,7 @@ Unified Finding Format:
 """
 
 import json
+import sys
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 import logging
@@ -351,22 +352,27 @@ class FindingNormalizer:
                 merged.append(group[0])
             else:
                 # Multiple tools found issue at same location
-                merged_finding = group[0]  # Start with first
-                merged_finding.id = f"merged-{location}"
+                base = group[0]
+                combined_evidence = {
+                    'static': dict(base.evidence.get('static', {})),
+                    'dynamic': dict(base.evidence.get('dynamic', {})),
+                    'fuzzing': dict(base.evidence.get('fuzzing', {})),
+                }
 
-                # Combine evidence
                 for other in group[1:]:
                     if other.tool == 'frida':
-                        merged_finding.evidence['dynamic'].update(other.evidence.get('dynamic', {}))
+                        combined_evidence['dynamic'].update(other.evidence.get('dynamic', {}))
                     elif other.tool in ['semgrep', 'codeql']:
-                        merged_finding.evidence['static'].update(other.evidence.get('static', {}))
+                        combined_evidence['static'].update(other.evidence.get('static', {}))
                     elif other.tool == 'afl':
-                        merged_finding.evidence['fuzzing'].update(other.evidence.get('fuzzing', {}))
+                        combined_evidence['fuzzing'].update(other.evidence.get('fuzzing', {}))
 
-                # Upgrade confidence if multiple tools agree
-                merged_finding.confidence = min(0.99, merged_finding.confidence + 0.1 * len(group))
+                merged_finding = UnifiedFinding()
+                merged_finding.__dict__.update(base.__dict__)
+                merged_finding.id = f"merged-{location}"
+                merged_finding.evidence = combined_evidence
+                merged_finding.confidence = min(0.99, base.confidence + 0.1 * len(group))
 
-                # Upgrade severity if confirmed dynamically
                 if any(f.tool == 'frida' for f in group):
                     merged_finding.exploitability = 'high'
 
